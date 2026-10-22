@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Smart Parcel Monitor</title>
+<style>
+  :root { color-scheme: light; --ink:#172033; --muted:#687386; --line:#e4e9f0; --bg:#f5f7fb; --card:#fff; --blue:#2457d6; --green:#17845b; --amber:#a76508; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:#14213d; color:white; padding:25px 20px; }
+  .header-inner, main { max-width:1150px; margin:0 auto; }
+  .eyebrow { color:#b9c9f6; text-transform:uppercase; letter-spacing:.12em; font-size:.75rem; font-weight:700; }
+  h1 { margin:6px 0 5px; font-size:clamp(1.6rem,4vw,2.2rem); }
+  header p { margin:0; color:#d6def1; }
+  main { padding:22px 18px 40px; }
+  .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:18px; }
+  .status { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:.9rem; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#9aa4b2; }
+  .dot.live { background:#1aa56f; box-shadow:0 0 0 4px #1aa56f20; }
+  button { border:0; border-radius:10px; padding:10px 15px; background:var(--blue); color:white; font-weight:650; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  .notice { display:none; margin:0 0 16px; padding:12px 14px; border-radius:10px; background:#fff2df; color:#784b06; border:1px solid #f1d7ad; overflow-wrap:anywhere; }
+  .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:15px; padding:17px; min-width:0; box-shadow:0 3px 12px #1b2a4510; }
+  .label { color:var(--muted); font-size:.86rem; font-weight:600; }
+  .value { font-size:clamp(1.45rem,3vw,2rem); font-weight:750; letter-spacing:-.04em; margin-top:12px; overflow-wrap:anywhere; }
+  .sub { color:var(--muted); font-size:.82rem; margin-top:6px; }
+  .section-title { margin:25px 0 12px; font-size:1.12rem; }
+  .sensor-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+  .sensor-line { display:flex; justify-content:space-between; gap:15px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .sensor-line:last-child { border-bottom:0; }
+  .sensor-line span:first-child { color:var(--muted); }
+  .sensor-line strong { text-align:right; overflow-wrap:anywhere; }
+  .table-wrap { overflow-x:auto; background:white; border:1px solid var(--line); border-radius:14px; }
+  table { border-collapse:collapse; width:100%; min-width:760px; font-size:.88rem; }
+  th,td { padding:12px 13px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { background:#f8faff; color:#59657a; font-size:.77rem; text-transform:uppercase; letter-spacing:.05em; }
+  tbody tr:last-child td { border-bottom:0; }
+  .pill { display:inline-block; border-radius:999px; padding:4px 9px; background:#eef2f7; color:#536174; font-size:.78rem; font-weight:700; }
+  .pill.on { background:#e0f6eb; color:#116644; }
+  .pill.off { background:#fff0dd; color:#8b5100; }
+  footer { color:var(--muted); font-size:.82rem; text-align:center; padding:22px 10px 0; }
+  @media(max-width:850px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media(max-width:560px) { .grid,.sensor-grid { grid-template-columns:1fr; } main { padding:16px 12px 30px; } .card { padding:15px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="eyebrow">IoT · Parcel safety</div>
+    <h1>Smart Parcel Monitor</h1>
+    <p>Live sensor readings and recent device history</p>
+  </div>
+</header>
+<main>
+  <div class="toolbar">
+    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Connecting to sensor API…</span></div>
+    <button id="refreshBtn" type="button">Refresh now</button>
+  </div>
+  <div id="notice" class="notice" role="status"></div>
+
+  <section class="grid" aria-label="Latest sensor readings">
+    <div class="card"><div class="label">Temperature</div><div class="value" id="temperature">—</div><div class="sub">Reported by device</div></div>
+    <div class="card"><div class="label">Light level (LDR)</div><div class="value" id="ldr">—</div><div class="sub">Raw sensor reading</div></div>
+    <div class="card"><div class="label">Light status</div><div class="value" id="lightStatus">—</div><div class="sub">Based on ESP32 logic</div></div>
+    <div class="card"><div class="label">Device</div><div class="value" id="deviceID">—</div><div class="sub" id="lastSeen">Last reading: —</div></div>
+  </section>
+
+  <h2 class="section-title">Motion sensor readings</h2>
+  <section class="sensor-grid">
+    <div class="card">
+      <div class="label">Accelerometer</div>
+      <div class="sensor-line"><span>Ax</span><strong id="ax">—</strong></div>
+      <div class="sensor-line"><span>Ay</span><strong id="ay">—</strong></div>
+      <div class="sensor-line"><span>Az</span><strong id="az">—</strong></div>
+    </div>
+    <div class="card">
+      <div class="label">Gyroscope</div>
+      <div class="sensor-line"><span>Gx</span><strong id="gx">—</strong></div>
+      <div class="sensor-line"><span>Gy</span><strong id="gy">—</strong></div>
+      <div class="sensor-line"><span>Gz</span><strong id="gz">—</strong></div>
+    </div>
+  </section>
+
+  <h2 class="section-title">Recent readings</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Device</th><th>Temperature</th><th>LDR</th><th>Light status</th><th>Ax</th><th>Ay</th><th>Az</th></tr></thead>
+      <tbody id="historyBody"><tr><td colspan="8">Waiting for readings…</td></tr></tbody>
+    </table>
+  </div>
+  <footer>Refreshes automatically every 5 seconds · Dashboard prototype (risk scoring not yet enabled)</footer>
+</main>
+<script>
+const API_URL = "https://75bjndxxk5.execute-api.ap-south-1.amazonaws.com/readings";
+const $ = (id) => document.getElementById(id);
+const val = (obj, key, suffix = "") => {
+  const v = obj?.[key];
+  return v === undefined || v === null || v === "" ? "—" : `${v}${suffix}`;
+};
+function formatTime(value) {
+  if (value === undefined || value === null || value === "") return "—";
+  let n = Number(value);
+  if (Number.isFinite(n)) {
+    // AWS IoT timestamp fields are commonly milliseconds; tolerate seconds too.
+    if (n < 100000000000) n *= 1000;
+    const d = new Date(n);
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+}
+function lightPill(value) {
+  const s = String(value ?? "—");
+  const low = s.toLowerCase();
+  const cls = (low.includes("bright") || low === "on" || low === "light") ? "on" :
+              (low.includes("dark") || low === "off") ? "off" : "";
+  return `<span class="pill ${cls}">${escapeHtml(s)}</span>`;
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showLatest(item) {
+  $("temperature").textContent = val(item, "temperatureC", " °C");
+  $("ldr").textContent = val(item, "ldr");
+  $("lightStatus").innerHTML = lightPill(item.lightStatus);
+  $("deviceID").textContent = val(item, "deviceID");
+  $("lastSeen").textContent = "Last reading: " + formatTime(item.eventTime);
+  ["ax","ay","az","gx","gy","gz"].forEach(k => $(k).textContent = val(item,k));
+}
+function renderHistory(items) {
+  const rows = items.map(item => `<tr>
+    <td>${escapeHtml(formatTime(item.eventTime))}</td>
+    <td>${escapeHtml(val(item,"deviceID"))}</td>
+    <td>${escapeHtml(val(item,"temperatureC"," °C"))}</td>
+    <td>${escapeHtml(val(item,"ldr"))}</td>
+    <td>${lightPill(item.lightStatus)}</td>
+    <td>${escapeHtml(val(item,"ax"))}</td>
+    <td>${escapeHtml(val(item,"ay"))}</td>
+    <td>${escapeHtml(val(item,"az"))}</td>
+  </tr>`).join("");
+  $("historyBody").innerHTML = rows || '<tr><td colspan="8">No readings found for ESP32.</td></tr>';
+}
+async function refreshReadings() {
+  const btn = $("refreshBtn");
+  btn.disabled = true;
+  try {
+    const response = await fetch(API_URL, { method: "GET", cache: "no-store" });
+    if (!response.ok) throw new Error(`API returned HTTP ${response.status}`);
+    const payload = await response.json();
+    let items = Array.isArray(payload) ? payload : payload.items;
+    if (!Array.isArray(items)) throw new Error("The API response did not contain an items array.");
+    // Lambda query returns newest first; sort defensively in case the API ordering changes.
+    items.sort((a,b) => Number(b.eventTime || 0) - Number(a.eventTime || 0));
+    if (items.length) showLatest(items[0]);
+    renderHistory(items.slice(0, 50));
+    $("statusDot").classList.add("live");
+    $("statusText").textContent = `Connected · ${items.length} record(s) returned · updated ${new Date().toLocaleTimeString()}`;
+    $("notice").style.display = "none";
+  } catch (err) {
+    $("statusDot").classList.remove("live");
+    $("statusText").textContent = "Could not load sensor data";
+    $("notice").textContent = `Dashboard connection error: ${err.message}. Check that the API URL is correct and API Gateway CORS allows this webpage's origin.`;
+    $("notice").style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("refreshBtn").addEventListener("click", refreshReadings);
+refreshReadings();
+setInterval(refreshReadings, 5000);
+</script>
+</body>
+</html>
