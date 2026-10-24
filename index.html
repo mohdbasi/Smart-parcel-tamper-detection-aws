@@ -40,6 +40,7 @@
   .pill { display:inline-block; border-radius:999px; padding:4px 9px; background:#eef2f7; color:#536174; font-size:.78rem; font-weight:700; }
   .pill.on { background:#e0f6eb; color:#116644; }
   .pill.off { background:#fff0dd; color:#8b5100; }
+  .pill.alert { background:#ffe5e5; color:#a11b1b; }
   footer { color:var(--muted); font-size:.82rem; text-align:center; padding:22px 10px 0; }
   @media(max-width:850px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   @media(max-width:560px) { .grid,.sensor-grid { grid-template-columns:1fr; } main { padding:16px 12px 30px; } .card { padding:15px; } }
@@ -65,6 +66,8 @@
     <div class="card"><div class="label">Light level (LDR)</div><div class="value" id="ldr">—</div><div class="sub">Raw sensor reading</div></div>
     <div class="card"><div class="label">Light status</div><div class="value" id="lightStatus">—</div><div class="sub">Based on ESP32 logic</div></div>
     <div class="card"><div class="label">Device</div><div class="value" id="deviceID">—</div><div class="sub" id="lastSeen">Last reading: —</div></div>
+    <div class="card"><div class="label">Parcel door</div><div class="value" id="doorStatus">—</div><div class="sub" id="doorOpen">Door-open signal: —</div></div>
+    <div class="card"><div class="label">Movement detection</div><div class="value" id="movementStatus">—</div><div class="sub" id="accelMagnitude">Acceleration magnitude: —</div></div>
   </section>
 
   <h2 class="section-title">Motion sensor readings</h2>
@@ -86,11 +89,11 @@
   <h2 class="section-title">Recent readings</h2>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Time</th><th>Device</th><th>Temperature</th><th>LDR</th><th>Light status</th><th>Ax</th><th>Ay</th><th>Az</th></tr></thead>
-      <tbody id="historyBody"><tr><td colspan="8">Waiting for readings…</td></tr></tbody>
+      <thead><tr><th>Time</th><th>Device</th><th>Door</th><th>Movement</th><th>Temperature</th><th>LDR</th><th>Light status</th><th>Ax</th><th>Ay</th><th>Az</th></tr></thead>
+      <tbody id="historyBody"><tr><td colspan="10">Waiting for readings…</td></tr></tbody>
     </table>
   </div>
-  <footer>Refreshes automatically every 5 seconds · Dashboard prototype (risk scoring not yet enabled)</footer>
+  <footer>Refreshes automatically every 5 seconds · Movement thresholds are provisional and should be calibrated with real parcel tests.</footer>
 </main>
 <script>
 const API_URL = "https://75bjndxxk5.execute-api.ap-south-1.amazonaws.com/readings";
@@ -111,36 +114,91 @@ function formatTime(value) {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
 }
+// Convert the raw 12-bit LDR ADC value into a readable light condition.
+// 4095 = Dark; a small drop = Light detected; a larger drop = Bright light detected.
+// Tune LIGHT_DETECTED_MIN if your real sensor readings suggest a better boundary.
+const LIGHT_DETECTED_MIN = 3500;
+function lightStatusFor(item) {
+  const raw = Number(item?.ldr);
+  if (item?.ldr === undefined || item?.ldr === null || item?.ldr === "" || !Number.isFinite(raw)) {
+    return String(item?.lightStatus ?? "—");
+  }
+  if (raw >= 4095) return "Dark";
+  if (raw >= LIGHT_DETECTED_MIN) return "Light detected";
+  return "Bright light detected";
+}
 function lightPill(value) {
   const s = String(value ?? "—");
   const low = s.toLowerCase();
-  const cls = (low.includes("bright") || low === "on" || low === "light") ? "on" :
-              (low.includes("dark") || low === "off") ? "off" : "";
+  const cls = low.includes("bright") ? "on" :
+              low.includes("dark") ? "off" :
+              low.includes("light detected") ? "" :
+              (low === "on" || low === "light") ? "on" :
+              low === "off" ? "off" : "";
   return `<span class="pill ${cls}">${escapeHtml(s)}</span>`;
 }
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+// Provisional thresholds for accelerometer readings expressed in g.
+// A stationary sensor is usually near 1 g. We measure deviation from 1 g.
+const SUDDEN_MOVEMENT_G = 0.35;
+const HEAVY_MOVEMENT_G = 0.80;
+
+function accelerationMagnitude(item) {
+  const axes = ["ax", "ay", "az"].map(k => Number(item?.[k]));
+  if (axes.some(v => !Number.isFinite(v))) return null;
+  return Math.sqrt(axes.reduce((sum, v) => sum + v * v, 0));
+}
+function movementInfo(item) {
+  const magnitude = accelerationMagnitude(item);
+  if (magnitude === null) return { magnitude: null, change: null, label: "No data", cls: "" };
+  const change = Math.abs(magnitude - 1.0);
+  if (change >= HEAVY_MOVEMENT_G) return { magnitude, change, label: "HEAVY MOVEMENT", cls: "alert" };
+  if (change >= SUDDEN_MOVEMENT_G) return { magnitude, change, label: "SUDDEN MOVEMENT", cls: "off" };
+  return { magnitude, change, label: "Normal", cls: "on" };
+}
+function movementPill(item) {
+  const m = movementInfo(item);
+  const detail = m.change === null ? "—" : `${m.change.toFixed(2)} g deviation`;
+  return `<span class="pill ${m.cls}">${escapeHtml(m.label)}</span><div class="sub">${escapeHtml(detail)}</div>`;
+}
+function doorPill(item) {
+  const status = String(item?.doorStatus ?? "—").toUpperCase();
+  const isOpen = item?.doorOpen === true || String(item?.doorOpen).toLowerCase() === "true";
+  const cls = isOpen || status === "OPEN" ? "alert" : status === "CLOSED" ? "on" : "";
+  return `<span class="pill ${cls}">${escapeHtml(status)}</span>`;
+}
 function showLatest(item) {
   $("temperature").textContent = val(item, "temperatureC", " °C");
   $("ldr").textContent = val(item, "ldr");
-  $("lightStatus").innerHTML = lightPill(item.lightStatus);
+  $("lightStatus").innerHTML = lightPill(lightStatusFor(item));
   $("deviceID").textContent = val(item, "deviceID");
   $("lastSeen").textContent = "Last reading: " + formatTime(item.eventTime);
+  $("doorStatus").innerHTML = doorPill(item);
+  const isDoorOpen = item?.doorOpen === true || String(item?.doorOpen).toLowerCase() === "true";
+  $("doorOpen").textContent = `Door-open signal: ${isDoorOpen ? "Yes" : "No"}`;
+  const movement = movementInfo(item);
+  $("movementStatus").innerHTML = `<span class="pill ${movement.cls}">${escapeHtml(movement.label)}</span>`;
+  $("accelMagnitude").textContent = movement.magnitude === null
+    ? "Acceleration magnitude: —"
+    : `Magnitude: ${movement.magnitude.toFixed(2)} g · deviation from 1 g: ${movement.change.toFixed(2)} g`;
   ["ax","ay","az","gx","gy","gz"].forEach(k => $(k).textContent = val(item,k));
 }
 function renderHistory(items) {
   const rows = items.map(item => `<tr>
     <td>${escapeHtml(formatTime(item.eventTime))}</td>
     <td>${escapeHtml(val(item,"deviceID"))}</td>
+    <td>${doorPill(item)}</td>
+    <td>${movementPill(item)}</td>
     <td>${escapeHtml(val(item,"temperatureC"," °C"))}</td>
     <td>${escapeHtml(val(item,"ldr"))}</td>
-    <td>${lightPill(item.lightStatus)}</td>
+    <td>${lightPill(lightStatusFor(item))}</td>
     <td>${escapeHtml(val(item,"ax"))}</td>
     <td>${escapeHtml(val(item,"ay"))}</td>
     <td>${escapeHtml(val(item,"az"))}</td>
   </tr>`).join("");
-  $("historyBody").innerHTML = rows || '<tr><td colspan="8">No readings found for ESP32.</td></tr>';
+  $("historyBody").innerHTML = rows || '<tr><td colspan="10">No readings found for ESP32.</td></tr>';
 }
 async function refreshReadings() {
   const btn = $("refreshBtn");
